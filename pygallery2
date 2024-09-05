@@ -1,0 +1,78 @@
+---
+- name: Deploy PiGallery2 to Kubernetes Cluster
+  hosts: k8s
+  become: yes
+  tasks:
+    - name: Ensure kubectl is installed and working
+      command: kubectl version --client
+      register: kubectl_installed
+      changed_when: False
+
+    - name: Validate Microk8s is running
+      command: microk8s status --wait-ready
+      register: microk8s_status
+
+    - name: Copy PiGallery2 deployment yaml to remote node
+      ansible.builtin.copy:
+        dest: /tmp/pigallery2-deployment.yaml
+        content: |
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: pigallery2
+          spec:
+            replicas: 1
+            selector:
+              matchLabels:
+                app: pigallery2
+            template:
+              metadata:
+                labels:
+                  app: pigallery2
+              spec:
+                containers:
+                - name: pigallery2
+                  image: bpatrik/pigallery2:latest
+                  ports:
+                  - containerPort: 8080
+                  env:
+                    - name: NODE_ENV
+                      value: "production"
+                    - name: GALLERY_CONFIG
+                      value: "/app/data/config.json"
+                    - name: DB_TYPE
+                      value: "sqlite"
+                    - name: DB_SQLITE_STORAGE
+                      value: "/app/data/db.sqlite"
+                  volumeMounts:
+                      - name: gallery-data
+                        mountPath: /app/data
+                volumes:
+                    - name: gallery-data
+                      hostPath:
+                        path: /data/pigallery2
+
+          ---
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: pigallery2-service
+          spec:
+            selector:
+              app: pigallery2
+            ports:
+              - protocol: TCP
+                port: 80
+                targetPort: 80
+            type: LoadBalancer
+  
+    - name: Apply PiGallery2 deployment using kubeconfig
+      command: microk8s kubectl apply -f /tmp/pigallery2-deployment.yaml
+      
+    - name: Wait for PiGallery2 deployment to be available
+      command: microk8s kubectl rollout status deployment/pigallery2
+      register: deployment_status
+
+    - name: Output Information
+      debug:
+        msg: "PiGallery2 is deployed successfully. Run `microk8s kubectl get svc` to find the LoadBalancer IP."
