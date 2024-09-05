@@ -1,0 +1,91 @@
+---
+- name: Update system and install MicroK8s, Docker, and dependencies
+  hosts: k8s
+  become: true
+
+  tasks:
+    - name: Update and upgrade the system
+      apt:
+        update_cache: yes
+        upgrade: yes
+
+    - name: Install required packages
+      apt:
+        name:
+          - snapd
+          - curl
+          - iptables
+          - socat
+          - conntrack
+          - btop
+        state: present
+
+    - name: Install microK8s and kubectl using snap
+      snap:
+        name: microk8s
+        state: present
+        classic: yes
+
+    - name: Install kubectl
+      snap:
+        name: kubectl
+        state: present
+        classic: yes
+
+    - name: Install Docker
+      apt:
+        name: docker.io
+        state: present
+
+    - name: Check if user is in microk8s group
+      shell: "groups {{ ansible_user }} | grep -w microk8s"
+      register: is_user_in_microk8s_group
+      ignore_errors: true
+
+    - name: Add user to the microk8s group
+      user:
+        name: "{{ ansible_user }}"
+        groups: "microk8s"
+        append: yes
+      when: is_user_in_microk8s_group.rc != 0
+      register: user_group_addition
+
+    - name: Reboot the system to apply group membership changes
+      reboot:
+      when: user_group_addition.changed
+
+    - name: Wait for the system to come back online
+      wait_for_connection:
+        timeout: 300
+      when: user_group_addition.changed
+
+    - name: Set up the .kube directory
+      file:
+        path: "/home/{{ ansible_user }}/.kube"
+        state: directory
+        owner: "{{ ansible_user }}"
+        group: "microk8s"
+        mode: "0755"
+        recurse: yes
+      when: ansible_user != 'root'
+
+    - name: Wait for MicroK8s to be ready
+      shell: "microk8s status --wait-ready"
+      register: microk8s_status
+      retries: 10
+      delay: 10
+      until: microk8s_status.rc == 0
+
+    - name: Enable basic MicroK8s addons
+      shell: |
+        microk8s enable dns
+        microk8s enable storage
+        microk8s enable ingress
+
+    - name: Verify if MicroK8s is running
+      shell: "microk8s kubectl get nodes ; microk8s kubectl get services"
+      register: kubectl_output
+
+    - name: Show the output of kubectl commands
+      debug:
+        var: kubectl_output.stdout
